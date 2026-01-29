@@ -13,6 +13,7 @@
   * [Entity Templates](#entity-templates)
   * [Entity Instances](#entity-instances)
   * [Batched Execution](#batched-execution)
+
 * [Editor Tooling & Code Generation](#editor-tooling--code-generation)
 * [Entity Creation & Registration](#entity-creation--registration)
 * [Runtime EntityBuilder (Experimental)](#runtime-entitybuilder-experimental)
@@ -20,6 +21,7 @@
 * [LinkedObjects](#linkedobjects)
 * [Template Attributes](#template-attributes)
 * [Queries](#queries)
+* [Runtime Execution Lifecycle](#runtime-execution-lifecycle)
 * [Supported Data Types](#supported-data-types)
 * [Data Access (Getter / Setter API)](#data-access-getter--setter-api)
 * [Performance Guidelines](#performance-guidelines)
@@ -88,10 +90,7 @@ All framework operations are **queued** and executed **at the end of the frame**
 * Destruction
 
 ✅ This avoids structural changes during query execution  
-⚠️ This means **results are not immediate** (runs in the LateUpdate)
-
----
-Hier ist der bereinigte Part für die Editor-Tools, direkt integriert in ein Layout, das ohne Tabellen auskommt und stattdessen auf Scannbarkeit durch Bullet-Points und fette Markierungen setzt:
+⚠️ This means **results are not immediate** (changes at end of frame)
 
 ---
 
@@ -101,9 +100,8 @@ The framework automates the boilerplate for Templates and LinkedObjects through 
 
 ### Menu Commands
 
-* **Framework Compilation** The master switch. Enables or disables the entire code generation system.
+* **Framework Compilation** The master switch. Enables or disables the entire framework.
 * **Auto Compilation** Automatically triggers a recompile when changes are detected in your scripts.
-  *Requires "Framework Compilation" to be active.*
 * **Recompile** Force-cleans the cache and triggers a fresh compilation.
 * **Clear** Wipes all generated files and resets the internal framework state.
 
@@ -220,7 +218,7 @@ They are:
 
 * Declared as public static fields
 * Accessed in Burst-compatible DOTS queries
-* Automatically synchronized every frame in the LateUpdate
+* Automatically synchronized every frame
 
 ---
 
@@ -245,7 +243,6 @@ public static List<ulong> EnemiesInRange;
 ## Template Attributes
 
 These attributes control **when to run functionality for which templates**.
-* Runs in the LateUpdate
 * Runs only for the specified template IDs
 * If **no IDs are provided**, runs for **all entities matching the query**
 * ✅Fewer IDs → less exclusion → better performance
@@ -258,7 +255,7 @@ These attributes control **when to run functionality for which templates**.
 ```
 
 * Called **every frame**
-* **First** template that runs
+* **First** query template that runs
 
 ---
 
@@ -269,8 +266,8 @@ These attributes control **when to run functionality for which templates**.
 ```
 
 * Called **once** when an entity instance is created
-* Calls in the same frame, the instance is created
-* **Last** template that runs
+* Calls in the frame after the instance was created
+* **Second** query template that runs
 
 ---
 
@@ -282,7 +279,7 @@ These attributes control **when to run functionality for which templates**.
 
 * Called when an entity instance is destroyed
 * Calls in the same frame, the instance is destroyed
-* **Second** template that runs
+* **Last** query template that runs
 
 ---
 
@@ -306,11 +303,13 @@ public static void PlayerMovement(
 {
     // Access DOTS components directly
 
-    // Access LinkedObject data via the API
+    // Access LinkedObject data
 
     // Perform your logic here...
 }
+
 ```
+
 
 
 ### Attributes:
@@ -322,9 +321,9 @@ public static void PlayerMovement(
 
 ### Parameter Types (all optional):
 
-### Components (`ref T`)
+### Components (`T`)
 * Direct access to standard DOTS `IComponentData`. You can include as many components as needed.
-### `ref EntityID`
+### `EntityID`
 * Provides the unique `SubID` of the instance. Available on every instance.
 ### `[LinkedObject]`
 * Bridges the gap to the GameObject world. It allows you to pull in global data or shared structures.
@@ -334,9 +333,32 @@ public static void PlayerMovement(
 The framework automatically handles job scheduling and dependency management:
 
 * **Thread Safety**: If multiple queries try to write to the same `LinkedObject`, they are scheduled sequentially to prevent data corruption.
-* **ReadOnly Optimization**: By setting the second parameter of `[LinkedObject]` to `true`, you mark the data as read-only. This allows the framework to run multiple queries in parallel.
+* **ReadOnly Optimization**: By setting the second parameter of `[LinkedObject]` to `true`, you mark the data as read-only. This allows the framework to run this query in parallel.
 
 > ⚠️ **Parallel Execution**: A query is only scheduled in parallel if **all** LinkedObjects in its parameters are marked as **ReadOnly**
+
+
+---
+
+### Runtime Execution Lifecycle
+
+
+<img src="https://github.com/mmDigital-dev/DOTS-Framework.Documentation/raw/main/runtime_sequence_diagram.png" width="1080" alt="Runtime Sequence Diagram">
+
+
+The execution flow strictly separates **logic** from **structural changes** to guarantee thread safety.
+
+1. **Sync In**
+   * Pushes `LinkedObject` data (GO World → ECS)
+2. **Run Queries** (Worker Threads)
+   * `[StartTemplate]` (New entities)
+   * `[UpdateTemplate]` (Active entities)
+   * `[EndTemplate]` (Destroyed entities)
+3. **Sync Out**
+   * Pulls data back to `LinkedObjects`
+4. **Apply Batched Operations**
+   * Executes queued structural changes (Creation, Destruction)
+
 
 ---
 
@@ -464,7 +486,7 @@ playerData.Get(out FixedString128Bytes skillName, "Skills.Name", new FixedList64
 ### LinkedObjects
 
 * Complex LinkedObjects → more overhead
-* Data is synced **twice per frame**
+* Data is synced **twice per frame** (read/write)
 * LinkedObject sync cost scales with data size
 ---
 
@@ -493,50 +515,22 @@ List<float3>
 
 ---
 
-### Method Count
+### Query Template Count
 
-* Each method has scheduling overhead
+* Each query template has scheduling overhead
 * Merge logic where possible
-
----
-
-### LinkedObject Data Layout
-
-* Use many **different** data types
-* Many **identical** data types are slower.
-* Multiple same data types cause **switch-based access**
-* single data type has **direct access**
-
-❌ Avoid:
-
-```csharp
-public struct Data
-{
-    public float Length
-    public float Height
-}
-```
-
-✅ Prefer:
-
-```csharp
-public struct Data
-{
-    public float Length
-    public double Height
-}
-```
-⚠️ Only noticeable in **larger** structures
 
 ---
 
 ### Advanced Optimization
 
-You may bypass Getter/Setter by directly accessing generated fields.  
+You may bypass the Getter/Setter API by directly accessing generated fields.
 
-* Faster
-* More flexible
-* ⚠️ Code generation may change interfaces
+* ✅ **Significantly Faster**: Direct access avoids the large overhead of the generic API.
+* ✅ **Stable**: However, the Getter/Setter API works **independently** of whether code has been generated or not.
+* ⚠️ **Workflow Hazard**: Direct access **requires** generated code. If you use it without up to date generated code (e.g. change in fields), you will get **syntax errors** which block compilation. Since the generator needs compilation to run, you can get stuck.
+* 💡 **Recommendation**: Use the Getter/Setter API during active development for stability. Switch to direct access **at the end of development** for performance.
+
 ```csharp
 playerData.Get(out FixedString128Bytes skillName, "Skills.Name", new FixedList64Bytes<int>() {0}); 
 
@@ -544,8 +538,6 @@ playerData.Data.Skills[0].Name; //⚠️Only valid with generated code
 ```
 
 You also can look into the generated files yourself to see what happens.
-
-Here is the updated **Roadmap** section, redesigned to match the professional, structured, and clear style of the rest of your README. I have clarified technical points (like "Unique Query Parameters") and categorized the tasks for better scannability.
 
 ---
 
@@ -555,13 +547,14 @@ The framework is under active development. Future updates will focus on performa
 
 ### 🚀 Performance & Core Engine
 
-* **ReadOnly Optimization**: Refine the internal dependency graph to better leverage `ReadOnly` parameters for even higher query concurrency.
-* **Custom Struct Registration**: Allow users to register custom unmanaged structs (like float3) to be treated as "Direct Access" types within LinkedObjects, bypassing generic overhead.
+* **ReadOnly Optimization**: Refine the internal scheduling dependencies to better leverage `ReadOnly` parameters for even higher query concurrency.
+* **Custom Struct Registration**: Allow users to register custom unmanaged structs (like float3) to be treated as compatible types within LinkedObjects, bypassing structure flattening.
 * **Entity Type Support**: Add support for the `Entity` type as a query parameter to allow direct referencing outside the framework.
 * **Refined Execution Ordering**: Implement a priority system (e.g., `[UpdateTemplate(Order = 10)]`) to allow manual control over the scheduling sequence when logic depends on specific execution flow.
 
 ### 🛠️ Developer Experience (DX)
 * **Configurable String Sizes**: Add a project-wide setting to customize the default size of FixedString types (e.g., switching from 128 to 64 or 512 bytes) via the Editor menu.
+* **Framework Generation Config**: A configuration menu to toggle specific code generation features, such as Getter/Setter APIs and other framework-specific options.
 * **Framework Info Menu**: A new Editor window to visualize which fields are currently visible to the generator and how you can access them in the LinkedObject.
 * **Code Analyzer**: Integrated analyzers to provide feedback (warnings/suggestions) on framework related code.
 * **Automatic Access Generator**: A tool to automatically generates your code between the safe **Getter/Setter API** and the high-performance **Direct Access** mode for generated fields.
@@ -572,3 +565,4 @@ The framework is under active development. Future updates will focus on performa
 * **EntityBuilder V2**: Rewrite the experimental `EntityBuilder` to fully support Physics components and improve performance and compability.
 * **Common Query Parameters**: Add built-in support for common global variables (like `DeltaTime`) as native query parameters without requiring manual LinkedObject setup.
 * **Unit Testing Suite**: Implement a comprehensive test runner to validate generated code integrity.
+
